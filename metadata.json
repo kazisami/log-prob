@@ -1,0 +1,6 @@
+{
+  "name": "TokenLens - LLM Token Probability & Logprob Visualizer",
+  "description": "Interactive visualizer for LLM next-token probabilities, logprobs, softmax temperature, nucleus/top-k sampling, and branching generation trees.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
