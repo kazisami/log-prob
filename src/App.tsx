@@ -19,6 +19,9 @@ import {
   X,
   Gauge,
   Calculator,
+  Sliders,
+  Thermometer,
+  Layers,
 } from 'lucide-react';
 
 export default function App() {
@@ -30,6 +33,9 @@ export default function App() {
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedStepIdx, setSelectedStepIdx] = useState<number | null>(0);
+  const [maxTokens, setMaxTokens] = useState<number>(10);
+  const [temperature, setTemperature] = useState<number>(1.0);
+  const [topK, setTopK] = useState<number>(40);
   const [entropyModalStep, setEntropyModalStep] = useState<TokenStep | null>(null);
   const [logProbModalData, setLogProbModalData] = useState<{
     token: string;
@@ -47,9 +53,11 @@ export default function App() {
   ];
 
   // Call real Gemini API endpoint with native responseLogprobs
-  const fetchTokenProbabilities = async (textToAnalyze?: string) => {
+  const fetchTokenProbabilities = async (textToAnalyze?: string, tokenCountOverride?: number) => {
     const text = (textToAnalyze !== undefined ? textToAnalyze : prompt).trim();
     if (!text) return;
+
+    const count = tokenCountOverride !== undefined ? tokenCountOverride : maxTokens;
 
     setIsLoading(true);
     setError(null);
@@ -60,7 +68,9 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           prompt: text,
-          maxTokens: 10,
+          maxTokens: count,
+          temperature,
+          topK,
         }),
       });
 
@@ -179,10 +189,231 @@ export default function App() {
                     fetchTokenProbabilities();
                   }
                 }}
-                rows={6}
+                rows={5}
                 placeholder="Type your prompt here..."
                 className="w-full bg-slate-50 border border-slate-300 rounded-lg p-3.5 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-600 focus:bg-white transition-all font-mono leading-relaxed resize-y"
               />
+
+              {/* Generation Controls: Tokens, Temperature, Top-K */}
+              <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200 space-y-4">
+                {/* 1. Token Count Selector */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-semibold text-slate-700 flex items-center gap-1.5">
+                      <Sliders className="w-3.5 h-3.5 text-blue-600" />
+                      <span>Tokens to Generate</span>
+                    </label>
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        type="number"
+                        min={1}
+                        max={60}
+                        value={maxTokens}
+                        onChange={(e) => {
+                          const parsed = parseInt(e.target.value, 10);
+                          if (!isNaN(parsed)) {
+                            setMaxTokens(Math.max(1, Math.min(60, parsed)));
+                          } else if (e.target.value === '') {
+                            setMaxTokens(1);
+                          }
+                        }}
+                        className="w-14 text-center font-mono font-bold text-xs bg-white border border-slate-300 rounded px-1.5 py-1 text-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 shadow-2xs"
+                      />
+                      <span className="text-[11px] text-slate-500 font-medium">tokens</span>
+                    </div>
+                  </div>
+
+                  {/* Range Slider */}
+                  <div className="space-y-1">
+                    <input
+                      type="range"
+                      min={1}
+                      max={60}
+                      step={1}
+                      value={maxTokens}
+                      onChange={(e) => setMaxTokens(Number(e.target.value))}
+                      className="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
+                    />
+                    <div className="flex justify-between text-[10px] font-mono text-slate-400 px-0.5">
+                      <span>1</span>
+                      <span>15</span>
+                      <span>30</span>
+                      <span>45</span>
+                      <span>60</span>
+                    </div>
+                  </div>
+
+                  {/* Quick Presets */}
+                  <div className="flex items-center justify-between pt-1">
+                    <span className="text-[11px] text-slate-500 font-medium">Tokens:</span>
+                    <div className="flex items-center gap-1">
+                      {[5, 10, 20, 30, 40, 50].map((preset) => (
+                        <button
+                          key={preset}
+                          type="button"
+                          onClick={() => setMaxTokens(preset)}
+                          className={`px-2 py-0.5 rounded text-[11px] font-mono font-semibold transition-all cursor-pointer ${
+                            maxTokens === preset
+                              ? 'bg-blue-600 text-white shadow-2xs'
+                              : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100 hover:text-slate-900'
+                          }`}
+                        >
+                          {preset}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="border-t border-slate-200/80 pt-3 space-y-3">
+                  {/* 2. Temperature Selector */}
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-1.5">
+                        <Thermometer className="w-3.5 h-3.5 text-rose-500" />
+                        <span className="text-xs font-semibold text-slate-700">Temperature</span>
+                        <span className="text-[10px] text-slate-400 font-normal">
+                          {temperature <= 0.2
+                            ? '(Deterministic)'
+                            : temperature <= 0.7
+                            ? '(Balanced)'
+                            : temperature <= 1.2
+                            ? '(Creative)'
+                            : '(Highly random)'}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          type="number"
+                          min={0.0}
+                          max={2.0}
+                          step={0.1}
+                          value={temperature}
+                          onChange={(e) => {
+                            const val = parseFloat(e.target.value);
+                            if (!isNaN(val)) {
+                              setTemperature(Math.max(0, Math.min(2.0, parseFloat(val.toFixed(2)))));
+                            }
+                          }}
+                          className="w-14 text-center font-mono font-bold text-xs bg-white border border-slate-300 rounded px-1.5 py-1 text-rose-600 focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 shadow-2xs"
+                        />
+                      </div>
+                    </div>
+
+                    <input
+                      type="range"
+                      min={0.0}
+                      max={2.0}
+                      step={0.05}
+                      value={temperature}
+                      onChange={(e) => setTemperature(parseFloat(Number(e.target.value).toFixed(2)))}
+                      className="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-rose-500"
+                    />
+                    <div className="flex justify-between text-[10px] font-mono text-slate-400 px-0.5">
+                      <span>0.0 (Argmax)</span>
+                      <span>0.7</span>
+                      <span>1.0 (Default)</span>
+                      <span>2.0 (Max)</span>
+                    </div>
+
+                    {/* Temperature Presets */}
+                    <div className="flex items-center justify-between pt-0.5">
+                      <span className="text-[11px] text-slate-500 font-medium">Presets:</span>
+                      <div className="flex items-center gap-1">
+                        {[
+                          { label: '0.0', val: 0.0, desc: 'Greedy' },
+                          { label: '0.3', val: 0.3, desc: 'Precise' },
+                          { label: '0.7', val: 0.7, desc: 'Balanced' },
+                          { label: '1.0', val: 1.0, desc: 'Default' },
+                          { label: '1.5', val: 1.5, desc: 'Wild' },
+                        ].map((item) => (
+                          <button
+                            key={item.label}
+                            type="button"
+                            onClick={() => setTemperature(item.val)}
+                            className={`px-2 py-0.5 rounded text-[11px] font-mono font-semibold transition-all cursor-pointer ${
+                              Math.abs(temperature - item.val) < 0.01
+                                ? 'bg-rose-500 text-white shadow-2xs'
+                                : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100 hover:text-slate-900'
+                            }`}
+                            title={item.desc}
+                          >
+                            {item.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* 3. Top-K Selector */}
+                  <div className="space-y-2 pt-2 border-t border-slate-200/60">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-1.5">
+                        <Layers className="w-3.5 h-3.5 text-indigo-600" />
+                        <span className="text-xs font-semibold text-slate-700">Top-K</span>
+                        <span className="text-[10px] text-slate-400 font-normal">
+                          (Tokens sampled)
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          type="number"
+                          min={1}
+                          max={100}
+                          value={topK}
+                          onChange={(e) => {
+                            const parsed = parseInt(e.target.value, 10);
+                            if (!isNaN(parsed)) {
+                              setTopK(Math.max(1, Math.min(100, parsed)));
+                            } else if (e.target.value === '') {
+                              setTopK(1);
+                            }
+                          }}
+                          className="w-14 text-center font-mono font-bold text-xs bg-white border border-slate-300 rounded px-1.5 py-1 text-indigo-600 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 shadow-2xs"
+                        />
+                      </div>
+                    </div>
+
+                    <input
+                      type="range"
+                      min={1}
+                      max={100}
+                      step={1}
+                      value={topK}
+                      onChange={(e) => setTopK(Number(e.target.value))}
+                      className="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+                    />
+                    <div className="flex justify-between text-[10px] font-mono text-slate-400 px-0.5">
+                      <span>1</span>
+                      <span>20</span>
+                      <span>40 (Default)</span>
+                      <span>64</span>
+                      <span>100</span>
+                    </div>
+
+                    {/* Top-K Presets */}
+                    <div className="flex items-center justify-between pt-0.5">
+                      <span className="text-[11px] text-slate-500 font-medium">Presets:</span>
+                      <div className="flex items-center gap-1">
+                        {[1, 5, 20, 40, 64, 100].map((preset) => (
+                          <button
+                            key={preset}
+                            type="button"
+                            onClick={() => setTopK(preset)}
+                            className={`px-2 py-0.5 rounded text-[11px] font-mono font-semibold transition-all cursor-pointer ${
+                              topK === preset
+                                ? 'bg-indigo-600 text-white shadow-2xs'
+                                : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100 hover:text-slate-900'
+                            }`}
+                          >
+                            {preset}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
 
               <div className="flex items-center justify-between pt-1">
                 <button
@@ -194,12 +425,12 @@ export default function App() {
                   {isLoading ? (
                     <>
                       <Loader2 className="w-4 h-4 animate-spin" />
-                      <span>Calling Gemini API (logprobs)...</span>
+                      <span>Calling Gemini API ({maxTokens} tokens, T={temperature}, K={topK})...</span>
                     </>
                   ) : (
                     <>
                       <Send className="w-4 h-4" />
-                      <span>Get Response & Token Probs</span>
+                      <span>Get Response ({maxTokens} tokens, T={temperature}, K={topK})</span>
                     </>
                   )}
                 </button>

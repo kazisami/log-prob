@@ -69,7 +69,7 @@ const HIGH_QUOTA_MODELS = [
 
 app.post('/api/analyze-tokens', async (req: Request, res: Response) => {
   try {
-    const { prompt, maxTokens = 10 } = req.body;
+    const { prompt, maxTokens = 10, temperature = 1.0, topK = 40 } = req.body;
     if (!prompt || typeof prompt !== 'string') {
       res.status(400).json({ error: 'Prompt is required' });
       return;
@@ -81,7 +81,9 @@ app.post('/api/analyze-tokens', async (req: Request, res: Response) => {
     }
 
     const start = Date.now();
-    const tokenLimit = Math.min(Math.max(Number(maxTokens) || 8, 1), 20);
+    const tokenLimit = Math.min(Math.max(Number(maxTokens) || 10, 1), 64);
+    const parsedTemp = Math.max(0.0, Math.min(2.0, typeof temperature === 'number' ? temperature : Number(temperature) || 1.0));
+    const parsedTopK = Math.max(1, Math.min(100, typeof topK === 'number' ? topK : Number(topK) || 40));
 
     // ATTEMPT 1: Try native responseLogprobs on gemini-2.5-flash
     try {
@@ -92,6 +94,8 @@ app.post('/api/analyze-tokens', async (req: Request, res: Response) => {
           responseLogprobs: true,
           logprobs: 5,
           maxOutputTokens: tokenLimit,
+          temperature: parsedTemp,
+          topK: parsedTopK,
         },
       });
 
@@ -171,6 +175,8 @@ app.post('/api/analyze-tokens', async (req: Request, res: Response) => {
    - "topCandidates": array of 3-5 alternative tokens with "token" and "probability" (floats summing approx to 1).`,
           config: {
             responseMimeType: 'application/json',
+            temperature: parsedTemp,
+            topK: parsedTopK,
           },
         });
 
