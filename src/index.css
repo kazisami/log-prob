@@ -1,1 +1,51 @@
 @import "tailwindcss";
+
+@layer utilities {
+  /* Subtle mesh gradient background */
+  .bg-radial-glow {
+    background-image: 
+      radial-gradient(at 10% 15%, rgba(59, 130, 246, 0.08) 0px, transparent 50%),
+      radial-gradient(at 90% 10%, rgba(147, 51, 234, 0.07) 0px, transparent 50%),
+      radial-gradient(at 50% 90%, rgba(16, 185, 129, 0.06) 0px, transparent 50%);
+  }
+
+  /* Shimmer effect for tokens */
+  @keyframes shimmer-sweep {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(200%); }
+  }
+
+  .animate-shimmer {
+    position: relative;
+    overflow: hidden;
+  }
+
+  .animate-shimmer::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.4), transparent);
+    animation: shimmer-sweep 2.5s infinite;
+  }
+
+  /* Floating gentle wave */
+  @keyframes float-slow {
+    0%, 100% { transform: translateY(0px) rotate(0deg); }
+    50% { transform: translateY(-5px) rotate(1deg); }
+  }
+
+  .animate-float {
+    animation: float-slow 4s ease-in-out infinite;
+  }
+
+  /* Pulse soft glow */
+  @keyframes glow-pulse {
+    0%, 100% { box-shadow: 0 0 15px rgba(59, 130, 246, 0.2); }
+    50% { box-shadow: 0 0 25px rgba(99, 102, 241, 0.35); }
+  }
+
+  .animate-glow-pulse {
+    animation: glow-pulse 3s infinite;
+  }
+}
