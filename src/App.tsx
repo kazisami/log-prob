@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { TokenStep, AnalysisResponse } from './types';
 import {
   Sparkles,
@@ -11,32 +11,35 @@ import {
   Loader2,
   Cpu,
   Clock,
-  Info,
-  ChevronRight,
-  BarChart2,
-  Flame,
-  HelpCircle,
-  X,
-  Gauge,
-  Calculator,
   Sliders,
   Thermometer,
   Layers,
+  ChevronDown,
+  X,
+  Calculator,
 } from 'lucide-react';
 
 export default function App() {
   const [prompt, setPrompt] = useState<string>('The capital of France is');
+  const [analyzedPrompt, setAnalyzedPrompt] = useState<string>('The capital of France is');
   const [steps, setSteps] = useState<TokenStep[]>([]);
-  const [fullResponseText, setFullResponseText] = useState<string>('');
   const [modelUsed, setModelUsed] = useState<string>('gemini-2.5-flash');
   const [durationMs, setDurationMs] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
-  const [selectedStepIdx, setSelectedStepIdx] = useState<number | null>(0);
+
+  // Parameters
   const [maxTokens, setMaxTokens] = useState<number>(10);
   const [temperature, setTemperature] = useState<number>(1.0);
   const [topK, setTopK] = useState<number>(40);
-  const [entropyModalStep, setEntropyModalStep] = useState<TokenStep | null>(null);
+
+  // Popover state for 3 param buttons
+  const [openParam, setOpenParam] = useState<'tokens' | 'temp' | 'topK' | null>(null);
+
+  // Hovered token for tooltip & inspection
+  const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
+
+  // Log-prob modal data
   const [logProbModalData, setLogProbModalData] = useState<{
     token: string;
     logProbability: number;
@@ -44,21 +47,26 @@ export default function App() {
     stepIndex?: number;
   } | null>(null);
 
-  const samplePrompts = [
-    'The capital of France is',
-    'Once upon a time in a deep dark',
-    'To be or not to',
-    'Photosynthesis is the chemical process where plants',
-    'def fibonacci(n):',
-  ];
+  // Refs for closing popovers on outside click
+  const paramBarRef = useRef<HTMLDivElement>(null);
 
-  // Call real Gemini API endpoint with native responseLogprobs
-  const fetchTokenProbabilities = async (textToAnalyze?: string, tokenCountOverride?: number) => {
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (paramBarRef.current && !paramBarRef.current.contains(event.target as Node)) {
+        setOpenParam(null);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  // Fetch token probabilities
+  const fetchResponse = async (textToAnalyze?: string) => {
     const text = (textToAnalyze !== undefined ? textToAnalyze : prompt).trim();
     if (!text) return;
 
-    const count = tokenCountOverride !== undefined ? tokenCountOverride : maxTokens;
-
+    setAnalyzedPrompt(text);
+    setOpenParam(null);
     setIsLoading(true);
     setError(null);
 
@@ -68,35 +76,22 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           prompt: text,
-          maxTokens: count,
+          maxTokens,
           temperature,
           topK,
         }),
       });
 
-      const contentType = res.headers.get('content-type') || '';
       if (!res.ok) {
-        if (contentType.includes('application/json')) {
-          const errJson = await res.json().catch(() => ({}));
-          throw new Error(errJson.error || `Server error (${res.status})`);
-        } else {
-          const textErr = await res.text().catch(() => '');
-          throw new Error(`Server error (${res.status}): ${textErr.slice(0, 100)}`);
-        }
-      }
-
-      if (!contentType.includes('application/json')) {
-        const textResp = await res.text().catch(() => '');
-        throw new Error(`Unexpected non-JSON response from server: ${textResp.slice(0, 80)}`);
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(errJson.error || `Server error (${res.status})`);
       }
 
       const data: AnalysisResponse = await res.json();
       if (data.steps && data.steps.length > 0) {
         setSteps(data.steps);
-        setFullResponseText(data.fullResponseText || '');
         setModelUsed(data.modelUsed || 'gemini-2.5-flash');
         setDurationMs(data.durationMs || null);
-        setSelectedStepIdx(0);
       } else {
         throw new Error('No token logprobs returned by Gemini API.');
       }
@@ -110,34 +105,45 @@ export default function App() {
 
   // Initial load
   useEffect(() => {
-    fetchTokenProbabilities('The capital of France is');
+    fetchResponse('The capital of France is');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const activeStep =
-    selectedStepIdx !== null && steps[selectedStepIdx]
-      ? steps[selectedStepIdx]
-      : null;
-
-  const getProbBadgeStyle = (p: number) => {
-    if (p >= 0.8) return 'bg-emerald-50 text-emerald-700 border-emerald-200';
-    if (p >= 0.5) return 'bg-blue-50 text-blue-700 border-blue-200';
-    if (p >= 0.25) return 'bg-amber-50 text-amber-700 border-amber-200';
-    return 'bg-rose-50 text-rose-700 border-rose-200';
-  };
-
-  const getProbBarStyle = (p: number) => {
-    if (p >= 0.8) return 'bg-emerald-500';
-    if (p >= 0.5) return 'bg-blue-500';
-    if (p >= 0.25) return 'bg-amber-500';
-    return 'bg-rose-500';
+  // Helper color styling according to confidence level
+  const getTokenConfidenceStyle = (p: number) => {
+    if (p >= 0.8) {
+      return {
+        bg: 'bg-emerald-100 hover:bg-emerald-200 border-emerald-300 text-emerald-950',
+        badge: 'bg-emerald-600 text-white',
+        label: 'Very High (≥80%)',
+      };
+    }
+    if (p >= 0.5) {
+      return {
+        bg: 'bg-blue-100 hover:bg-blue-200 border-blue-300 text-blue-950',
+        badge: 'bg-blue-600 text-white',
+        label: 'High (50–79%)',
+      };
+    }
+    if (p >= 0.25) {
+      return {
+        bg: 'bg-amber-100 hover:bg-amber-200 border-amber-300 text-amber-950',
+        badge: 'bg-amber-600 text-white',
+        label: 'Moderate (25–49%)',
+      };
+    }
+    return {
+      bg: 'bg-rose-100 hover:bg-rose-200 border-rose-300 text-rose-950',
+      badge: 'bg-rose-600 text-white',
+      label: 'Low (<25%)',
+    };
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans flex flex-col">
-      {/* Light Top Header */}
-      <header className="bg-white border-b border-slate-200 px-6 py-3.5 sticky top-0 z-40 shadow-xs">
-        <div className="max-w-7xl mx-auto flex items-center justify-between">
+    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans flex flex-col selection:bg-blue-100 selection:text-blue-900">
+      {/* Clean Top Header */}
+      <header className="bg-white border-b border-slate-200 px-6 py-3.5 sticky top-0 z-30 shadow-xs">
+        <div className="max-w-4xl mx-auto flex items-center justify-between">
           <div className="flex items-center space-x-3">
             <div className="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center text-white shadow-xs">
               <Sparkles className="w-4 h-4" />
@@ -164,67 +170,59 @@ export default function App() {
         </div>
       </header>
 
-      {/* Main 2-Column Split: Left Input, Right Token Probs Vertically */}
-      <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8">
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-          
-          {/* LEFT SIDE: Text Box Input & Step Detail */}
-          <div className="lg:col-span-5 space-y-5">
-            <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs space-y-4">
-              <div className="flex items-center justify-between">
-                <label className="text-xs font-bold uppercase tracking-wider text-slate-600">
-                  Enter Text / Prompt
-                </label>
-                <span className="text-xs text-slate-400 font-mono">
-                  {prompt.length} chars
-                </span>
-              </div>
+      {/* Main Centered Content */}
+      <main className="flex-1 max-w-4xl w-full mx-auto px-4 py-8 space-y-6">
+        {/* PROMPT BOX IN THE MIDDLE WITH 4 BOTTOM BUTTONS */}
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm transition-all focus-within:border-blue-500 focus-within:ring-3 focus-within:ring-blue-500/10">
+          <div className="p-4 sm:p-5">
+            <textarea
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                  e.preventDefault();
+                  fetchResponse();
+                }
+              }}
+              rows={4}
+              placeholder="Enter your prompt here (e.g., 'The capital of France is')..."
+              className="w-full bg-transparent text-slate-900 placeholder-slate-400 text-base font-mono resize-none focus:outline-none leading-relaxed"
+            />
+          </div>
 
-              <textarea
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-                    e.preventDefault();
-                    fetchTokenProbabilities();
-                  }
-                }}
-                rows={5}
-                placeholder="Type your prompt here..."
-                className="w-full bg-slate-50 border border-slate-300 rounded-lg p-3.5 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-600 focus:bg-white transition-all font-mono leading-relaxed resize-y"
-              />
+          {/* BOTTOM BUTTONS BAR */}
+          <div
+            ref={paramBarRef}
+            className="border-t border-slate-100 px-4 py-3 bg-slate-50/70 rounded-b-2xl flex flex-wrap items-center justify-between gap-3 relative"
+          >
+            {/* Left 3 Param Buttons */}
+            <div className="flex items-center gap-2 relative">
+              {/* BUTTON 1: Tokens */}
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setOpenParam(openParam === 'tokens' ? null : 'tokens')}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold font-mono border transition-all cursor-pointer ${
+                    openParam === 'tokens'
+                      ? 'bg-blue-50 text-blue-700 border-blue-300 ring-2 ring-blue-500/15'
+                      : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100 hover:border-slate-300 shadow-2xs'
+                  }`}
+                >
+                  <Sliders className="w-3.5 h-3.5 text-blue-600" />
+                  <span>Tokens: <strong>{maxTokens}</strong></span>
+                  <ChevronDown className="w-3 h-3 text-slate-400" />
+                </button>
 
-              {/* Generation Controls: Tokens, Temperature, Top-K */}
-              <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200 space-y-4">
-                {/* 1. Token Count Selector */}
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <label className="text-xs font-semibold text-slate-700 flex items-center gap-1.5">
-                      <Sliders className="w-3.5 h-3.5 text-blue-600" />
-                      <span>Tokens to Generate</span>
-                    </label>
-                    <div className="flex items-center gap-1.5">
-                      <input
-                        type="number"
-                        min={1}
-                        max={60}
-                        value={maxTokens}
-                        onChange={(e) => {
-                          const parsed = parseInt(e.target.value, 10);
-                          if (!isNaN(parsed)) {
-                            setMaxTokens(Math.max(1, Math.min(60, parsed)));
-                          } else if (e.target.value === '') {
-                            setMaxTokens(1);
-                          }
-                        }}
-                        className="w-14 text-center font-mono font-bold text-xs bg-white border border-slate-300 rounded px-1.5 py-1 text-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 shadow-2xs"
-                      />
-                      <span className="text-[11px] text-slate-500 font-medium">tokens</span>
+                {/* Tokens Popover */}
+                {openParam === 'tokens' && (
+                  <div className="absolute left-0 bottom-full mb-2 w-72 bg-white rounded-xl border border-slate-200 shadow-xl p-4 z-40 animate-in fade-in zoom-in-95 duration-150">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-bold text-slate-800">Tokens to Generate</span>
+                      <span className="font-mono text-xs font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded border border-blue-100">
+                        {maxTokens} tokens
+                      </span>
                     </div>
-                  </div>
 
-                  {/* Range Slider */}
-                  <div className="space-y-1">
                     <input
                       type="range"
                       min={1}
@@ -234,70 +232,64 @@ export default function App() {
                       onChange={(e) => setMaxTokens(Number(e.target.value))}
                       className="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
                     />
-                    <div className="flex justify-between text-[10px] font-mono text-slate-400 px-0.5">
+                    <div className="flex justify-between text-[10px] font-mono text-slate-400 mt-1">
                       <span>1</span>
                       <span>15</span>
                       <span>30</span>
                       <span>45</span>
                       <span>60</span>
                     </div>
-                  </div>
 
-                  {/* Quick Presets */}
-                  <div className="flex items-center justify-between pt-1">
-                    <span className="text-[11px] text-slate-500 font-medium">Tokens:</span>
-                    <div className="flex items-center gap-1">
-                      {[5, 10, 20, 30, 40, 50].map((preset) => (
-                        <button
-                          key={preset}
-                          type="button"
-                          onClick={() => setMaxTokens(preset)}
-                          className={`px-2 py-0.5 rounded text-[11px] font-mono font-semibold transition-all cursor-pointer ${
-                            maxTokens === preset
-                              ? 'bg-blue-600 text-white shadow-2xs'
-                              : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100 hover:text-slate-900'
-                          }`}
-                        >
-                          {preset}
-                        </button>
-                      ))}
+                    <div className="mt-3 pt-2.5 border-t border-slate-100">
+                      <span className="text-[11px] text-slate-500 block mb-1.5 font-medium">Quick Select:</span>
+                      <div className="flex flex-wrap gap-1">
+                        {[5, 10, 15, 20, 30, 45, 60].map((t) => (
+                          <button
+                            key={t}
+                            type="button"
+                            onClick={() => {
+                              setMaxTokens(t);
+                              setOpenParam(null);
+                            }}
+                            className={`px-2.5 py-1 rounded text-xs font-mono font-medium transition-colors cursor-pointer ${
+                              maxTokens === t
+                                ? 'bg-blue-600 text-white'
+                                : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                            }`}
+                          >
+                            {t}
+                          </button>
+                        ))}
+                      </div>
                     </div>
                   </div>
-                </div>
+                )}
+              </div>
 
-                <div className="border-t border-slate-200/80 pt-3 space-y-3">
-                  {/* 2. Temperature Selector */}
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-1.5">
-                        <Thermometer className="w-3.5 h-3.5 text-rose-500" />
-                        <span className="text-xs font-semibold text-slate-700">Temperature</span>
-                        <span className="text-[10px] text-slate-400 font-normal">
-                          {temperature <= 0.2
-                            ? '(Deterministic)'
-                            : temperature <= 0.7
-                            ? '(Balanced)'
-                            : temperature <= 1.2
-                            ? '(Creative)'
-                            : '(Highly random)'}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-1.5">
-                        <input
-                          type="number"
-                          min={0.0}
-                          max={2.0}
-                          step={0.1}
-                          value={temperature}
-                          onChange={(e) => {
-                            const val = parseFloat(e.target.value);
-                            if (!isNaN(val)) {
-                              setTemperature(Math.max(0, Math.min(2.0, parseFloat(val.toFixed(2)))));
-                            }
-                          }}
-                          className="w-14 text-center font-mono font-bold text-xs bg-white border border-slate-300 rounded px-1.5 py-1 text-rose-600 focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 shadow-2xs"
-                        />
-                      </div>
+              {/* BUTTON 2: Temp */}
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setOpenParam(openParam === 'temp' ? null : 'temp')}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold font-mono border transition-all cursor-pointer ${
+                    openParam === 'temp'
+                      ? 'bg-rose-50 text-rose-700 border-rose-300 ring-2 ring-rose-500/15'
+                      : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100 hover:border-slate-300 shadow-2xs'
+                  }`}
+                >
+                  <Thermometer className="w-3.5 h-3.5 text-rose-500" />
+                  <span>Temp: <strong>{temperature.toFixed(1)}</strong></span>
+                  <ChevronDown className="w-3 h-3 text-slate-400" />
+                </button>
+
+                {/* Temp Popover */}
+                {openParam === 'temp' && (
+                  <div className="absolute left-0 bottom-full mb-2 w-72 bg-white rounded-xl border border-slate-200 shadow-xl p-4 z-40 animate-in fade-in zoom-in-95 duration-150">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-bold text-slate-800">Temperature</span>
+                      <span className="font-mono text-xs font-bold text-rose-600 bg-rose-50 px-2 py-0.5 rounded border border-rose-100">
+                        {temperature.toFixed(2)}
+                      </span>
                     </div>
 
                     <input
@@ -309,69 +301,70 @@ export default function App() {
                       onChange={(e) => setTemperature(parseFloat(Number(e.target.value).toFixed(2)))}
                       className="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-rose-500"
                     />
-                    <div className="flex justify-between text-[10px] font-mono text-slate-400 px-0.5">
+                    <div className="flex justify-between text-[10px] font-mono text-slate-400 mt-1">
                       <span>0.0 (Argmax)</span>
-                      <span>0.7</span>
                       <span>1.0 (Default)</span>
                       <span>2.0 (Max)</span>
                     </div>
 
-                    {/* Temperature Presets */}
-                    <div className="flex items-center justify-between pt-0.5">
-                      <span className="text-[11px] text-slate-500 font-medium">Presets:</span>
-                      <div className="flex items-center gap-1">
+                    <div className="mt-3 pt-2.5 border-t border-slate-100">
+                      <span className="text-[11px] text-slate-500 block mb-1.5 font-medium">Modes:</span>
+                      <div className="grid grid-cols-2 gap-1.5 text-xs">
                         {[
-                          { label: '0.0', val: 0.0, desc: 'Greedy' },
-                          { label: '0.3', val: 0.3, desc: 'Precise' },
-                          { label: '0.7', val: 0.7, desc: 'Balanced' },
-                          { label: '1.0', val: 1.0, desc: 'Default' },
-                          { label: '1.5', val: 1.5, desc: 'Wild' },
+                          { label: '0.0 Greedy', val: 0.0, desc: 'Deterministic' },
+                          { label: '0.3 Precise', val: 0.3, desc: 'Fact-focused' },
+                          { label: '0.7 Balanced', val: 0.7, desc: 'Standard' },
+                          { label: '1.0 Default', val: 1.0, desc: 'Original' },
+                          { label: '1.4 Creative', val: 1.4, desc: 'Novel ideas' },
+                          { label: '1.8 Wild', val: 1.8, desc: 'High variance' },
                         ].map((item) => (
                           <button
                             key={item.label}
                             type="button"
-                            onClick={() => setTemperature(item.val)}
-                            className={`px-2 py-0.5 rounded text-[11px] font-mono font-semibold transition-all cursor-pointer ${
+                            onClick={() => {
+                              setTemperature(item.val);
+                              setOpenParam(null);
+                            }}
+                            className={`p-1.5 rounded text-left transition-colors cursor-pointer border ${
                               Math.abs(temperature - item.val) < 0.01
-                                ? 'bg-rose-500 text-white shadow-2xs'
-                                : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100 hover:text-slate-900'
+                                ? 'bg-rose-50 border-rose-300 text-rose-800 font-semibold'
+                                : 'bg-slate-50 border-slate-200 hover:bg-slate-100 text-slate-700'
                             }`}
-                            title={item.desc}
                           >
-                            {item.label}
+                            <span className="block font-mono text-[11px]">{item.label}</span>
+                            <span className="text-[10px] text-slate-400">{item.desc}</span>
                           </button>
                         ))}
                       </div>
                     </div>
                   </div>
+                )}
+              </div>
 
-                  {/* 3. Top-K Selector */}
-                  <div className="space-y-2 pt-2 border-t border-slate-200/60">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-1.5">
-                        <Layers className="w-3.5 h-3.5 text-indigo-600" />
-                        <span className="text-xs font-semibold text-slate-700">Top-K</span>
-                        <span className="text-[10px] text-slate-400 font-normal">
-                          (Tokens sampled)
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-1.5">
-                        <input
-                          type="number"
-                          min={1}
-                          max={100}
-                          value={topK}
-                          onChange={(e) => {
-                            const parsed = parseInt(e.target.value, 10);
-                            if (!isNaN(parsed)) {
-                              setTopK(Math.max(1, Math.min(100, parsed)));
-                            } else if (e.target.value === '') {
-                              setTopK(1);
-                            }
-                          }}
-                          className="w-14 text-center font-mono font-bold text-xs bg-white border border-slate-300 rounded px-1.5 py-1 text-indigo-600 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 shadow-2xs"
-                        />
-                      </div>
+              {/* BUTTON 3: Top-K */}
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setOpenParam(openParam === 'topK' ? null : 'topK')}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold font-mono border transition-all cursor-pointer ${
+                    openParam === 'topK'
+                      ? 'bg-indigo-50 text-indigo-700 border-indigo-300 ring-2 ring-indigo-500/15'
+                      : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100 hover:border-slate-300 shadow-2xs'
+                  }`}
+                >
+                  <Layers className="w-3.5 h-3.5 text-indigo-600" />
+                  <span>Top-K: <strong>{topK}</strong></span>
+                  <ChevronDown className="w-3 h-3 text-slate-400" />
+                </button>
+
+                {/* Top-K Popover */}
+                {openParam === 'topK' && (
+                  <div className="absolute left-0 bottom-full mb-2 w-72 bg-white rounded-xl border border-slate-200 shadow-xl p-4 z-40 animate-in fade-in zoom-in-95 duration-150">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-bold text-slate-800">Top-K Candidate Pool</span>
+                      <span className="font-mono text-xs font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-100">
+                        {topK} tokens
+                      </span>
                     </div>
 
                     <input
@@ -383,7 +376,7 @@ export default function App() {
                       onChange={(e) => setTopK(Number(e.target.value))}
                       className="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
                     />
-                    <div className="flex justify-between text-[10px] font-mono text-slate-400 px-0.5">
+                    <div className="flex justify-between text-[10px] font-mono text-slate-400 mt-1">
                       <span>1</span>
                       <span>20</span>
                       <span>40 (Default)</span>
@@ -391,554 +384,219 @@ export default function App() {
                       <span>100</span>
                     </div>
 
-                    {/* Top-K Presets */}
-                    <div className="flex items-center justify-between pt-0.5">
-                      <span className="text-[11px] text-slate-500 font-medium">Presets:</span>
-                      <div className="flex items-center gap-1">
-                        {[1, 5, 20, 40, 64, 100].map((preset) => (
+                    <div className="mt-3 pt-2.5 border-t border-slate-100">
+                      <span className="text-[11px] text-slate-500 block mb-1.5 font-medium">Quick Select:</span>
+                      <div className="flex flex-wrap gap-1">
+                        {[1, 5, 10, 20, 40, 64, 100].map((k) => (
                           <button
-                            key={preset}
+                            key={k}
                             type="button"
-                            onClick={() => setTopK(preset)}
-                            className={`px-2 py-0.5 rounded text-[11px] font-mono font-semibold transition-all cursor-pointer ${
-                              topK === preset
-                                ? 'bg-indigo-600 text-white shadow-2xs'
-                                : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100 hover:text-slate-900'
+                            onClick={() => {
+                              setTopK(k);
+                              setOpenParam(null);
+                            }}
+                            className={`px-2.5 py-1 rounded text-xs font-mono font-medium transition-colors cursor-pointer ${
+                              topK === k
+                                ? 'bg-indigo-600 text-white'
+                                : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
                             }`}
                           >
-                            {preset}
+                            {k}
                           </button>
                         ))}
                       </div>
                     </div>
                   </div>
-                </div>
-              </div>
-
-              <div className="flex items-center justify-between pt-1">
-                <button
-                  type="button"
-                  onClick={() => fetchTokenProbabilities()}
-                  disabled={isLoading || !prompt.trim()}
-                  className="w-full flex items-center justify-center gap-2 px-5 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm shadow-xs transition-all active:scale-[0.99] disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
-                >
-                  {isLoading ? (
-                    <>
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      <span>Calling Gemini API ({maxTokens} tokens, T={temperature}, K={topK})...</span>
-                    </>
-                  ) : (
-                    <>
-                      <Send className="w-4 h-4" />
-                      <span>Get Response ({maxTokens} tokens, T={temperature}, K={topK})</span>
-                    </>
-                  )}
-                </button>
-              </div>
-
-              {/* Sample Prompts */}
-              <div className="pt-2 border-t border-slate-100">
-                <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider block mb-2">
-                  Sample Prompts:
-                </span>
-                <div className="flex flex-wrap gap-1.5">
-                  {samplePrompts.map((s, idx) => (
-                    <button
-                      key={idx}
-                      type="button"
-                      onClick={() => {
-                        setPrompt(s);
-                        fetchTokenProbabilities(s);
-                      }}
-                      disabled={isLoading}
-                      className="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 px-2.5 py-1 rounded-md transition-colors border border-slate-200"
-                    >
-                      {s}
-                    </button>
-                  ))}
-                </div>
+                )}
               </div>
             </div>
 
-            {/* Error Message */}
-            {error && (
-              <div className="p-4 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-700 space-y-1">
-                <div className="font-semibold flex items-center gap-1.5">
-                  <Flame className="w-4 h-4 text-rose-500" />
-                  <span>API Notice:</span>
-                </div>
-                <div className="leading-relaxed">{error}</div>
-              </div>
-            )}
-
-            {/* Real Full Response Text */}
-            {fullResponseText && (
-              <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-xs text-xs space-y-2">
-                <div className="font-semibold text-slate-800 flex items-center gap-1.5">
-                  <Info className="w-4 h-4 text-blue-600" />
-                  <span>Generated Completion:</span>
-                </div>
-                <div className="bg-slate-50 p-3 rounded-lg border border-slate-200 font-mono text-slate-800 whitespace-pre-wrap leading-relaxed">
-                  {fullResponseText}
-                </div>
-              </div>
-            )}
-
-            {/* Selected Step Deep Dive Card */}
-            {activeStep && (
-              <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-xs space-y-3">
-                <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-                  <span className="text-xs font-bold text-slate-800 uppercase tracking-wider">
-                    Step #{activeStep.stepIndex} Selected Token
-                  </span>
-                  <span className="text-xs font-mono font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
-                    &quot;{activeStep.selectedToken}&quot;
-                  </span>
-                </div>
-
-                <div className="text-xs text-slate-600 space-y-2">
-                  <div className="flex items-center justify-between p-2 rounded-lg bg-blue-50/60 border border-blue-200/80">
-                    <div className="flex items-center gap-1.5">
-                      <Calculator className="w-3.5 h-3.5 text-blue-600" />
-                      <span className="text-slate-700 font-medium">Log-Probability (ln P):</span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setLogProbModalData({
-                          token: activeStep.selectedToken,
-                          logProbability: activeStep.selectedLogProb,
-                          probability: activeStep.selectedProbability,
-                          stepIndex: activeStep.stepIndex,
-                        });
-                      }}
-                      className="group flex items-center gap-1 px-2 py-0.5 rounded bg-white hover:bg-blue-100 text-blue-900 border border-blue-300 transition-all font-mono font-bold text-xs shadow-2xs hover:scale-105 cursor-pointer"
-                      title="Click to understand Log-Probability (ln P) with an analogy"
-                    >
-                      <span>{activeStep.selectedLogProb.toFixed(5)}</span>
-                      <HelpCircle className="w-3.5 h-3.5 text-blue-600 group-hover:text-blue-800 transition-colors" />
-                    </button>
-                  </div>
-
-                  <div className="flex items-center justify-between">
-                    <span className="text-slate-500">Calculated P(w) = exp(ln P):</span>
-                    <span className="font-mono font-bold text-blue-700">
-                      {(activeStep.selectedProbability * 100).toFixed(2)}%
-                    </span>
-                  </div>
-
-                  {typeof activeStep.entropy === 'number' && (
-                    <div className="flex items-center justify-between p-2 rounded-lg bg-amber-50/60 border border-amber-200/80">
-                      <div className="flex items-center gap-1.5">
-                        <Gauge className="w-3.5 h-3.5 text-amber-600" />
-                        <span className="text-slate-700 font-medium">Shannon Entropy:</span>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setEntropyModalStep(activeStep);
-                        }}
-                        className="group flex items-center gap-1 px-2 py-0.5 rounded bg-white hover:bg-amber-100 text-amber-900 border border-amber-300 transition-all font-mono font-bold text-xs shadow-2xs hover:scale-105 cursor-pointer"
-                        title="Click to understand Shannon entropy with an analogy"
-                      >
-                        <span>{activeStep.entropy.toFixed(3)} bits</span>
-                        <HelpCircle className="w-3.5 h-3.5 text-amber-600 group-hover:text-amber-800 transition-colors" />
-                      </button>
-                    </div>
-                  )}
-
-                  <div className="pt-2">
-                    <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider block mb-2">
-                      Top Candidates Returned by Gemini API:
-                    </span>
-                    <div className="space-y-1.5">
-                      {activeStep.topCandidates.map((cand, cIdx) => (
-                        <div
-                          key={cIdx}
-                          className="flex items-center justify-between p-2 rounded bg-slate-50 border border-slate-100 text-xs font-mono"
-                        >
-                          <div className="flex items-center gap-1.5">
-                            <span className="text-slate-400">#{cIdx + 1}</span>
-                            <span className="font-bold text-slate-900">
-                              &quot;{cand.token}&quot;
-                            </span>
-                            {cand.tokenId && (
-                              <span className="text-[10px] text-slate-400">
-                                (id:{cand.tokenId})
-                              </span>
-                            )}
-                          </div>
-                          <div className="flex items-center gap-3">
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setLogProbModalData({
-                                  token: cand.token,
-                                  logProbability: cand.logProbability,
-                                  probability: cand.probability,
-                                  stepIndex: activeStep.stepIndex,
-                                });
-                              }}
-                              className="text-slate-500 hover:text-blue-700 hover:underline text-[11px] cursor-pointer"
-                              title="Click to understand Log-Probability"
-                            >
-                              ln P: {cand.logProbability.toFixed(3)}
-                            </button>
-                            <span className="font-bold text-blue-700">
-                              {(cand.probability * 100).toFixed(2)}%
-                            </span>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* RIGHT SIDE: Vertical Token Probabilities Stream */}
-          <div className="lg:col-span-7 space-y-4">
-            <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs">
-              <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center gap-2">
-                  <BarChart2 className="w-5 h-5 text-blue-600" />
-                  <h2 className="text-sm font-bold text-slate-900 uppercase tracking-wider">
-                    Next-Token Probabilities (Vertical Stream)
-                  </h2>
-                </div>
-                <span className="text-xs text-slate-400">
-                  {steps.length} sequential tokens from API
-                </span>
-              </div>
-
-              {isLoading && steps.length === 0 ? (
-                <div className="py-20 flex flex-col items-center justify-center text-slate-400 space-y-3">
-                  <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
-                  <span className="text-sm font-medium">Fetching real token logprobs from Gemini API...</span>
-                </div>
-              ) : steps.length === 0 ? (
-                <div className="py-20 text-center text-slate-400">
-                  <p className="text-sm">No token probabilities loaded yet.</p>
-                  <p className="text-xs text-slate-400 mt-1">
-                    Enter text on the left and click &quot;Get Response & Token Probs&quot;.
-                  </p>
-                </div>
+            {/* Right Button: Response Action */}
+            <button
+              type="button"
+              onClick={() => fetchResponse()}
+              disabled={isLoading || !prompt.trim()}
+              className="inline-flex items-center gap-2 px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 active:scale-[0.98] text-white font-semibold text-xs shadow-xs transition-all disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+            >
+              {isLoading ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>Generating...</span>
+                </>
               ) : (
-                <div className="space-y-3">
-                  {steps.map((step, idx) => {
-                    const isSelected = selectedStepIdx === idx;
-                    const pct = (step.selectedProbability * 100).toFixed(1);
+                <>
+                  <Send className="w-3.5 h-3.5" />
+                  <span>Response</span>
+                </>
+              )}
+            </button>
+          </div>
+        </div>
 
-                    return (
-                      <div
-                        key={step.stepIndex}
-                        onClick={() => setSelectedStepIdx(idx)}
-                        className={`p-4 rounded-xl border transition-all cursor-pointer ${
-                          isSelected
-                            ? 'bg-blue-50/50 border-blue-500 ring-2 ring-blue-500/20 shadow-xs'
-                            : 'bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50/50'
-                        }`}
-                      >
-                        {/* Token Row Header */}
-                        <div className="flex items-center justify-between gap-3 mb-2.5">
-                          <div className="flex items-center gap-2.5">
-                            <span className="w-6 h-6 rounded-md bg-slate-100 text-slate-600 text-xs font-mono font-bold flex items-center justify-center border border-slate-200">
-                              {step.stepIndex}
-                            </span>
-                            <span className="font-mono text-sm font-bold text-slate-900 bg-slate-100 px-2.5 py-1 rounded-md border border-slate-200">
-                              &quot;{step.selectedToken}&quot;
-                            </span>
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setLogProbModalData({
-                                  token: step.selectedToken,
-                                  logProbability: step.selectedLogProb,
-                                  probability: step.selectedProbability,
-                                  stepIndex: step.stepIndex,
-                                });
-                              }}
-                              className="group inline-flex items-center gap-0.5 text-[11px] font-mono text-slate-500 hover:text-blue-700 hover:bg-blue-50 px-1.5 py-0.5 rounded border border-transparent hover:border-blue-200 transition-colors cursor-pointer"
-                              title="Click to understand Log-Probability"
-                            >
-                              <span>ln P: {step.selectedLogProb.toFixed(3)}</span>
-                              <HelpCircle className="w-2.5 h-2.5 text-blue-500 opacity-50 group-hover:opacity-100" />
-                            </button>
+        {/* ERROR DISPLAY */}
+        {error && (
+          <div className="p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-center justify-between">
+            <span>{error}</span>
+            <button
+              type="button"
+              onClick={() => fetchResponse()}
+              className="px-2.5 py-1 bg-white hover:bg-rose-100 text-rose-700 rounded border border-rose-300 font-semibold cursor-pointer"
+            >
+              Retry
+            </button>
+          </div>
+        )}
+
+        {/* CUTE WAITING ANIMATION WHILE GENERATING */}
+        {isLoading && (
+          <div className="bg-white rounded-2xl border border-slate-200 p-8 shadow-xs text-center space-y-4 animate-in fade-in duration-300">
+            {/* Whimsical animated loader */}
+            <div className="relative w-20 h-20 mx-auto flex items-center justify-center">
+              {/* Outer pulsing ring */}
+              <div className="absolute inset-0 rounded-full bg-blue-100 animate-ping opacity-60"></div>
+              {/* Spinning gradient ring */}
+              <div className="absolute inset-1 rounded-full border-3 border-transparent border-t-blue-500 border-r-indigo-500 animate-spin"></div>
+              {/* Bouncing inner core */}
+              <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-600 text-white flex items-center justify-center shadow-md animate-bounce">
+                <Sparkles className="w-5 h-5 animate-pulse" />
+              </div>
+            </div>
+
+            <div className="space-y-1">
+              <h3 className="text-sm font-bold text-slate-800">
+                Evaluating Token Probabilities...
+              </h3>
+              <p className="text-xs text-slate-500 font-mono">
+                Sampling {maxTokens} tokens with T={temperature.toFixed(1)} and Top-K={topK}
+              </p>
+            </div>
+
+            {/* Cute wave of pulsing dots */}
+            <div className="flex items-center justify-center gap-1.5 pt-1">
+              <span className="w-2 h-2 rounded-full bg-blue-500 animate-bounce [animation-delay:-0.3s]"></span>
+              <span className="w-2 h-2 rounded-full bg-indigo-500 animate-bounce [animation-delay:-0.15s]"></span>
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-bounce"></span>
+            </div>
+          </div>
+        )}
+
+        {/* PROMINENT RESPONSE DISPLAY: PROMPT PREPENDED + COLOR-CODED TOKENS */}
+        {!isLoading && steps.length > 0 && (
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 sm:p-7 space-y-4">
+            {/* Confidence Legend Bar */}
+            <div className="flex flex-wrap items-center justify-end gap-2 text-[11px] font-mono pb-2 border-b border-slate-100">
+              <span className="text-slate-400 text-[10px]">Confidence:</span>
+              <span className="flex items-center gap-1 text-emerald-800 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded">
+                <span className="w-2 h-2 rounded-full bg-emerald-500"></span> ≥80%
+              </span>
+              <span className="flex items-center gap-1 text-blue-800 bg-blue-50 border border-blue-200 px-1.5 py-0.5 rounded">
+                <span className="w-2 h-2 rounded-full bg-blue-500"></span> 50-79%
+              </span>
+              <span className="flex items-center gap-1 text-amber-800 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded">
+                <span className="w-2 h-2 rounded-full bg-amber-500"></span> 25-49%
+              </span>
+              <span className="flex items-center gap-1 text-rose-800 bg-rose-50 border border-rose-200 px-1.5 py-0.5 rounded">
+                <span className="w-2 h-2 rounded-full bg-rose-500"></span> &lt;25%
+              </span>
+            </div>
+
+            {/* UNIFIED MEANINGFUL TEXT: PROMPT + COLOR-CODED GENERATED TOKENS */}
+            <div className="p-5 rounded-xl bg-slate-50/70 border border-slate-200/70 font-mono text-base leading-loose flex flex-wrap items-center gap-1.5">
+              {/* Original User Prompt Prepended */}
+              <span className="text-slate-800 font-medium px-2 py-0.5 rounded bg-slate-200/70 border border-slate-300/80 mr-1 select-text">
+                {analyzedPrompt}
+              </span>
+
+              {/* Color-coded Generated Tokens */}
+              {steps.map((step, idx) => {
+                const pct = (step.selectedProbability * 100).toFixed(1);
+                const style = getTokenConfidenceStyle(step.selectedProbability);
+                const isHovered = hoveredIdx === idx;
+
+                return (
+                  <div
+                    key={step.stepIndex}
+                    className="relative inline-block"
+                    onMouseEnter={() => setHoveredIdx(idx)}
+                    onMouseLeave={() => setHoveredIdx(null)}
+                  >
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setLogProbModalData({
+                          token: step.selectedToken,
+                          logProbability: step.selectedLogProb,
+                          probability: step.selectedProbability,
+                          stepIndex: step.stepIndex,
+                        })
+                      }
+                      className={`px-2 py-0.5 rounded-md border text-sm font-semibold transition-all cursor-pointer shadow-2xs hover:scale-105 ${style.bg} ${
+                        isHovered ? 'ring-2 ring-blue-500/30' : ''
+                      }`}
+                    >
+                      {/* Preserves spaces in tokens visually */}
+                      {step.selectedToken === '\n' ? (
+                        <span className="text-slate-400">↵</span>
+                      ) : (
+                        <span>{step.selectedToken}</span>
+                      )}
+                    </button>
+
+                    {/* HOVER TOOLTIP SHOWING EXACT PERCENTAGE & ALTERNATIVES */}
+                    {isHovered && (
+                      <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 w-52 bg-slate-900 text-white rounded-xl shadow-xl p-3 z-50 text-xs font-sans pointer-events-none animate-in fade-in zoom-in-95 duration-100">
+                        <div className="flex items-center justify-between pb-1.5 border-b border-slate-800 mb-1.5">
+                          <span className="font-mono font-bold text-blue-300">
+                            &quot;{step.selectedToken}&quot;
+                          </span>
+                          <span className={`text-[10px] font-mono px-1.5 py-0.2 rounded font-bold ${style.badge}`}>
+                            {pct}%
+                          </span>
+                        </div>
+
+                        <div className="text-[11px] text-slate-300 space-y-1 font-mono">
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">Step:</span>
+                            <span>#{step.stepIndex}</span>
                           </div>
-
-                          <div className="flex items-center gap-2">
-                            {typeof step.entropy === 'number' && (
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setEntropyModalStep(step);
-                                }}
-                                className="group flex items-center gap-1 px-2 py-0.5 rounded bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 text-[11px] font-mono font-medium transition-all shadow-2xs hover:scale-105 cursor-pointer"
-                                title="Click to understand Shannon entropy with an analogy"
-                              >
-                                <Gauge className="w-3 h-3 text-amber-600" />
-                                <span>{step.entropy.toFixed(2)} bits</span>
-                                <HelpCircle className="w-2.5 h-2.5 text-amber-500 opacity-60 group-hover:opacity-100" />
-                              </button>
-                            )}
-                            <span
-                              className={`text-xs font-mono font-bold px-2.5 py-1 rounded-md border ${getProbBadgeStyle(
-                                step.selectedProbability
-                              )}`}
-                            >
-                              {pct}%
-                            </span>
-                            <ChevronRight
-                              className={`w-4 h-4 text-slate-400 transition-transform ${
-                                isSelected ? 'rotate-90 text-blue-600' : ''
-                              }`}
-                            />
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">Log-Prob:</span>
+                            <span>{step.selectedLogProb.toFixed(3)}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">Confidence:</span>
+                            <span className="text-emerald-400">{style.label}</span>
                           </div>
                         </div>
 
-                        {/* Top Candidate Distribution from Gemini API */}
-                        <div className="space-y-2 pt-1">
-                          {step.topCandidates.slice(0, 4).map((cand, cIdx) => {
-                            const candPct = (cand.probability * 100).toFixed(1);
-                            const isChosen = cand.token === step.selectedToken;
-
-                            return (
-                              <div key={cIdx} className="space-y-1">
-                                <div className="flex items-center justify-between text-xs font-mono text-slate-600">
-                                  <div className="flex items-center gap-1.5">
-                                    <span className="text-[11px] text-slate-400">
-                                      #{cIdx + 1}
-                                    </span>
-                                    <span
-                                      className={`${
-                                        isChosen
-                                          ? 'font-bold text-slate-900'
-                                          : 'text-slate-600'
-                                      }`}
-                                    >
-                                      &quot;{cand.token}&quot;
-                                    </span>
-                                    <button
-                                      type="button"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        setLogProbModalData({
-                                          token: cand.token,
-                                          logProbability: cand.logProbability,
-                                          probability: cand.probability,
-                                          stepIndex: step.stepIndex,
-                                        });
-                                      }}
-                                      className="text-[10px] text-slate-400 hover:text-blue-700 hover:underline cursor-pointer"
-                                      title="Click to understand Log-Probability"
-                                    >
-                                      (ln P: {cand.logProbability.toFixed(2)})
-                                    </button>
-                                  </div>
-                                  <span
-                                    className={`font-semibold ${
-                                      isChosen ? 'text-blue-700' : 'text-slate-500'
-                                    }`}
-                                  >
-                                    {candPct}%
-                                  </span>
-                                </div>
-
-                                <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
-                                  <div
-                                    className={`h-full rounded-full transition-all duration-300 ${getProbBarStyle(
-                                      cand.probability
-                                    )}`}
-                                    style={{
-                                      width: `${Math.max(2, cand.probability * 100)}%`,
-                                    }}
-                                  ></div>
-                                </div>
+                        {step.topCandidates && step.topCandidates.length > 1 && (
+                          <div className="pt-2 mt-2 border-t border-slate-800 space-y-1">
+                            <span className="text-[10px] text-slate-400 uppercase tracking-wider block font-semibold">
+                              Top Alternatives:
+                            </span>
+                            {step.topCandidates.slice(0, 3).map((c, cIdx) => (
+                              <div key={cIdx} className="flex justify-between text-[11px] font-mono text-slate-300">
+                                <span>&quot;{c.token}&quot;</span>
+                                <span className="text-slate-400">
+                                  {(c.probability * 100).toFixed(1)}%
+                                </span>
                               </div>
-                            );
-                          })}
+                            ))}
+                          </div>
+                        )}
+
+                        <div className="pt-1.5 mt-1 border-t border-slate-800 text-[10px] text-slate-400 text-center">
+                          Click token for math breakdown
                         </div>
                       </div>
-                    );
-                  })}
-                </div>
-              )}
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
-
-        </div>
+        )}
       </main>
-
-      {/* Shannon Entropy Explanation Modal */}
-      {entropyModalStep && typeof entropyModalStep.entropy === 'number' && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs animate-in fade-in duration-200"
-          onClick={() => setEntropyModalStep(null)}
-        >
-          <div
-            className="bg-white rounded-2xl shadow-xl max-w-lg w-full border border-slate-200 overflow-hidden transform transition-all animate-in zoom-in-95 duration-200"
-            onClick={(e) => e.stopPropagation()}
-          >
-            {/* Modal Header */}
-            <div className="bg-gradient-to-r from-amber-500 to-amber-600 px-6 py-4 text-white flex items-center justify-between">
-              <div className="flex items-center gap-2.5">
-                <div className="p-1.5 bg-white/20 rounded-lg backdrop-blur-xs">
-                  <Gauge className="w-5 h-5 text-white" />
-                </div>
-                <div>
-                  <h3 className="font-bold text-base leading-tight">
-                    Understanding Shannon Entropy
-                  </h3>
-                  <p className="text-xs text-amber-100 font-mono">
-                    Step #{entropyModalStep.stepIndex}: &quot;{entropyModalStep.selectedToken}&quot;
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setEntropyModalStep(null)}
-                className="p-1.5 rounded-lg text-white/80 hover:text-white hover:bg-white/20 transition-colors cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            {/* Modal Content */}
-            <div className="p-6 space-y-4 max-h-[80vh] overflow-y-auto">
-              {/* Current Value Highlight */}
-              <div className="flex items-center justify-between p-3.5 rounded-xl bg-amber-50 border border-amber-200">
-                <div>
-                  <span className="text-xs text-amber-800 font-medium block">
-                    Current Measured Value:
-                  </span>
-                  <span className="text-2xl font-bold font-mono text-amber-950">
-                    {entropyModalStep.entropy.toFixed(3)}{' '}
-                    <span className="text-sm font-semibold text-amber-700">bits</span>
-                  </span>
-                </div>
-                <div className="text-right">
-                  <span className="text-xs text-slate-500 block">Surprise Level:</span>
-                  <span
-                    className={`inline-block px-2.5 py-1 rounded-full text-xs font-bold ${
-                      entropyModalStep.entropy < 0.2
-                        ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
-                        : entropyModalStep.entropy < 1.0
-                        ? 'bg-blue-100 text-blue-800 border border-blue-300'
-                        : 'bg-rose-100 text-rose-800 border border-rose-300'
-                    }`}
-                  >
-                    {entropyModalStep.entropy < 0.2
-                      ? 'Very Low (Certain)'
-                      : entropyModalStep.entropy < 1.0
-                      ? 'Moderate (Few choices)'
-                      : 'High (Great uncertainty)'}
-                  </span>
-                </div>
-              </div>
-
-              {/* The Analogy Section */}
-              <div className="space-y-2">
-                <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
-                  <Sparkles className="w-4 h-4 text-amber-600" />
-                  <span>The 20 Questions / Coin Toss Analogy</span>
-                </h4>
-                <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 text-xs text-slate-700 space-y-2.5 leading-relaxed">
-                  <p>
-                    Think of <strong>Shannon Entropy</strong> as the number of <em>fair Yes/No questions</em> you would have to ask on average to guess what word or token the AI will pick next.
-                  </p>
-                  
-                  {entropyModalStep.entropy < 0.3 ? (
-                    <div className="p-3 bg-emerald-50/70 border border-emerald-200 rounded-lg text-emerald-900">
-                      <strong>🎯 Here, entropy is near 0 ({entropyModalStep.entropy.toFixed(2)} bits):</strong>
-                      <p className="mt-1">
-                        Like completing <em>&quot;The capital of France is...&quot;</em>. There is practically no guessing game required—the answer is almost certainly <strong>&quot;{entropyModalStep.selectedToken}&quot;</strong> ({(entropyModalStep.selectedProbability * 100).toFixed(1)}% prob). The model is completely confident.
-                      </p>
-                    </div>
-                  ) : entropyModalStep.entropy < 1.2 ? (
-                    <div className="p-3 bg-blue-50/70 border border-blue-200 rounded-lg text-blue-900">
-                      <strong>⚖️ Here, entropy is around {entropyModalStep.entropy.toFixed(2)} bits (1 question):</strong>
-                      <p className="mt-1">
-                        Like a coin flip between 2 good candidates (e.g. <em>&quot;is&quot;</em> vs <em>&quot;was&quot;</em>). You only need about 1 Yes/No question to resolve the uncertainty.
-                      </p>
-                    </div>
-                  ) : (
-                    <div className="p-3 bg-rose-50/70 border border-rose-200 rounded-lg text-rose-900">
-                      <strong>🎲 Here, entropy is high ({entropyModalStep.entropy.toFixed(2)} bits):</strong>
-                      <p className="mt-1">
-                        Like rolling an 8-sided die or picking from dozens of equally plausible words (e.g. starting a brand new topic). The model has many competitive paths and no single dominant choice.
-                      </p>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* Formula & Rule of Thumb */}
-              <div className="grid grid-cols-2 gap-3 text-xs">
-                <div className="p-3 rounded-lg border border-slate-200 bg-slate-50">
-                  <span className="font-semibold text-slate-800 block mb-1">
-                    Mathematical Formula
-                  </span>
-                  <code className="text-[11px] font-mono text-blue-700 bg-white px-1.5 py-0.5 rounded border border-slate-200 block">
-                    H = - Σ (P * log₂ P)
-                  </code>
-                  <span className="text-[11px] text-slate-500 mt-1 block">
-                    Computed over candidate token probabilities.
-                  </span>
-                </div>
-                <div className="p-3 rounded-lg border border-slate-200 bg-slate-50">
-                  <span className="font-semibold text-slate-800 block mb-1">
-                    Intuitive Rule
-                  </span>
-                  <span className="text-[11px] text-slate-600 block leading-normal">
-                    <strong>0 bits</strong> = Total certainty<br />
-                    <strong>1 bit</strong> = 50/50 two-way split<br />
-                    <strong>2+ bits</strong> = Open-ended choices
-                  </span>
-                </div>
-              </div>
-
-              {/* Token Candidate Split at this step */}
-              <div className="pt-1">
-                <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider block mb-1.5">
-                  Candidate Competition at Step #{entropyModalStep.stepIndex}:
-                </span>
-                <div className="space-y-1">
-                  {entropyModalStep.topCandidates.map((c, idx) => (
-                    <div
-                      key={idx}
-                      className="flex items-center justify-between text-xs font-mono p-1.5 rounded bg-slate-50 border border-slate-100"
-                    >
-                      <span className="text-slate-800 font-semibold">
-                        &quot;{c.token}&quot;
-                      </span>
-                      <span className="text-blue-700 font-bold">
-                        {(c.probability * 100).toFixed(1)}%
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            {/* Modal Footer */}
-            <div className="bg-slate-50 px-6 py-3 border-t border-slate-200 flex justify-end">
-              <button
-                type="button"
-                onClick={() => setEntropyModalStep(null)}
-                className="px-4 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-white font-semibold text-xs transition-colors cursor-pointer"
-              >
-                Got it
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Log-Probability Explanation Modal */}
       {logProbModalData && (
